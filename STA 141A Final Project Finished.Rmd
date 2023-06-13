@@ -1,0 +1,395 @@
+---
+title: "STA 141A Final Project"
+author: "Samantha Isabel Zaraspe - SID: 918284646"
+date: "2023-06-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/Users/samisubi/Desktop/STA 141A Work/Final Project")
+library(tidyverse) 
+library(magrittr)   
+library(knitr) 
+library(dplyr)
+library(caTools)
+```
+
+## Abstract
+
+Within this project, we will be creating a predictive model that will allow us to forecast the outcome of different trials using different variables within a given dataset. In order to accomplish this, we will focus on a data subset collected by Steinmetz et al. in 2019. We will also create and use a Logistic Regression model to help us with these predictions.
+
+
+## I. Introduction
+
+Before we can begin to analyze this data, we must first understand how our data was acquired, as well as what each of part of the variable means. The original set of data consists of 39 sessions worth of hundreds of experimental trials that were performed on 10 different mice. These mice were randomly presented visual stimuli on two different sides on either side of the mouse. The visuals that were shown to each mouse varied randomly in contrast level. These contrast levels were numerically labeled as {0, 0.25, 5, 1}, where 0 means there was no stimulus on the screen at all. Depending on the difference in contrast between the two monitors, each mouse was expected to respond in certain ways by turning a wheel with its forearms. This particular dataset focuses on a few possible scenarios that may occur with the two monitors. If the two monitors had different visuals and the mouse turned the wheel in the direction of the stimulus with the brighter contrast, it was recorded a 'success' and assigned a value of (1). Otherwise, it was considered a failure and recorded as a (-1). Additionally, if both monitors had a contrast level of 0, a success response would be recorded if the mouse did not move the wheel. Finally, if both the monitors had equal, non-zero contrasts, the successful response was randomly selected. In addition to the feedback recorded within these trials, the neurological activity of each mouse's visual courtex was recorded, as well as the timestamps that correspond to when neurons were triggered. 
+
+The subset utilized within this project consists of the data from 18 experiment sessions that were ran on 4 of those mice: Cori, Frossman, Hence, and Lederberg. Within this subset, we have a few variables that were recorded: each of the mice's names represented by 'mouse_name,' the date the session was held labelled 'date_exp', the number of neurons or 'n_neurons,' the number of trials 'n_trials,' and finally the success rate fittingly referred to as 'success rate.'
+
+As we examine this dataset, we will attempt to find any patterns that may indicate a cause for a mouse's success or failure in a given trial. There are a few potential causes that may contribute to the success rate of a session. In particular, the success rate of a mouse may be attributed to either the amount of neurons activated or the number of trials the mouse undergoes. Although some may theorize that brain activity has the largest influence on the success rate, it is also possible that a mouse's ability to respond correctly is contingent on the amount of time it has had to build up a habit or to learn instead.
+
+Keeping these possibilities in mind as we continue with this project, we will create a predictive model that will help us forecast what the success rate of a mouse will be based on its neural activity.
+
+
+## II. Exploratory Analysis
+
+In order to observe any significant influences on the success rate of these mice, we must visualize and compare data across the different trials and sessions within this subset.
+
+```{r,echo=FALSE}
+setwd("/Users/samisubi/Desktop/STA 141A Work/Final Project/sessions") 
+session = list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('session',i,'.rds',sep=''))
+}
+n.session=length(session)
+
+meta <- tibble(
+  mouse_name = rep('name',n.session),
+  date_exp =rep('dt',n.session),
+  n_brain_area = rep(0,n.session),
+  n_neurons = rep(0,n.session),
+  n_trials = rep(0,n.session),
+  success_rate = rep(0,n.session)
+)
+
+for(i in 1:n.session){
+  tmp = session[[i]];
+  meta[i,1]=tmp$mouse_name;
+  meta[i,2]=tmp$date_exp;
+  meta[i,3]=length(unique(tmp$brain_area));
+  meta[i,4]=dim(tmp$spks[[1]])[1];
+  meta[i,5]=length(tmp$feedback_type);
+  meta[i,6]=mean(tmp$feedback_type+1)/2;
+}
+kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2) 
+```
+
+Depicted in the table above is a table describing the data structures across all sessions. We are able to see the name of the mouse that was experimented on for each session, as well as their brain activity, number of trials ran, and their success rate. After observing this data on the table, a few questions about it come to mind. In particular, the difference between the first and last sessions for each mouse. The mice that have more sessions, and thus more trials, appear to have more of a drastic change in success rate. Because this stood out, let us observe and compare Sessions 12 and 18, the first and last session of Lederberg, the mouse that had the most sessions within this data set.
+
+```{r,echo=FALSE}
+setwd("/Users/samisubi/Desktop/STA 141A Work/Final Project/sessions")
+i.s = 12
+i.t = 1
+
+average_spike_area<-function(i.t,this_session){
+  spk.trial = this_session$spks[[i.t]]
+  area= this_session$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  spk.average.tapply=tapply(spk.count, area, mean)
+  return(spk.average.tapply)
+  }
+
+average_spike_area(1,this_session = session[[i.s]])
+
+n.trial=length(session[[i.s]]$feedback_type)
+n.area=length(unique(session[[i.s]]$brain_area ))
+
+trial.summary =matrix(nrow=n.trial,ncol= n.area+1+2+1)
+for(i.t in 1:n.trial){
+  trial.summary[i.t,]=c(average_spike_area(i.t,this_session = session[[i.s]]),
+                          session[[i.s]]$feedback_type[i.t],
+                        session[[i.s]]$contrast_left[i.t],
+                        session[[i.s]]$contrast_right[i.s],
+                        i.t)
+}
+
+colnames(trial.summary)=c(names(average_spike_area(i.t,this_session = session[[i.s]])), 'feedback', 'left contr.','right contr.','id' )
+
+trial.summary <- as_tibble(trial.summary)
+
+area.col=rainbow(n=n.area,alpha=0.7)
+
+plot(x=1,y=0, col='white',xlim=c(0,n.trial),ylim=c(0.5,2.2), xlab="Trials",ylab="Average spike counts", main=paste("Spikes per area in Session", i.s))
+
+for(i in 1:n.area){
+  lines(y=trial.summary[[i]],x=trial.summary$id,col=area.col[i],lty=2,lwd=1)
+  lines(smooth.spline(trial.summary$id, trial.summary[[i]]),col=area.col[i],lwd=3)
+  }
+legend("topright", 
+  legend = colnames(trial.summary)[1:n.area], 
+  col = area.col, 
+  lty = 1, 
+  cex = 0.8
+)
+```
+
+Depicted above is a line graph of the average spike count across all the trials within Session 12. Due to the larger number of brain areas that were active during the trials, the graph above appears to be quite hectic, despite a lower number of neurons being fired. It appears that the areas SUB, VISam, CA1, DG, and MD had the most neurons fire, as the line depicting their averages appears to fluctuate, whereas the other areas have a more consistent average.
+
+As we know from the table shown previously, this trial ended with a success rate of 0.74, one of the more average success rates within our sessions. It is possible that this larger scale of brain activity increased the chances for the mouse's success, but it is not definitive enough evidence for us to conclude that neural activity is the sole cause of raise in these rates. Time spent experiencing these experiments may still be a major factor in improving results. Let us explore this idea more by comparing this line graph of Session 12's trial data to that of Session 18, the last session Lederberg underwent.
+
+```{r,echo=FALSE}
+setwd("/Users/samisubi/Desktop/STA 141A Work/Final Project/sessions")
+i.s = 18
+i.t = 1
+
+average_spike_area<-function(i.t,this_session){
+  spk.trial = this_session$spks[[i.t]]
+  area= this_session$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  spk.average.tapply=tapply(spk.count, area, mean)
+  return(spk.average.tapply)
+  }
+
+average_spike_area(1,this_session = session[[i.s]])
+
+n.trial=length(session[[i.s]]$feedback_type)
+n.area=length(unique(session[[i.s]]$brain_area ))
+
+trial.summary =matrix(nrow=n.trial,ncol= n.area+1+2+1)
+for(i.t in 1:n.trial){
+  trial.summary[i.t,]=c(average_spike_area(i.t,this_session = session[[i.s]]),
+                          session[[i.s]]$feedback_type[i.t],
+                        session[[i.s]]$contrast_left[i.t],
+                        session[[i.s]]$contrast_right[i.s],
+                        i.t)
+}
+
+colnames(trial.summary)=c(names(average_spike_area(i.t,this_session = session[[i.s]])), 'feedback', 'left contr.','right contr.','id' )
+
+trial.summary <- as_tibble(trial.summary)
+
+area.col=rainbow(n=n.area,alpha=0.7)
+
+plot(x=1,y=0, col='white',xlim=c(0,n.trial),ylim=c(0.5,2.2), xlab="Trials",ylab="Average spike counts", main=paste("Spikes per area in Session", i.s))
+
+for(i in 1:n.area){
+  lines(y=trial.summary[[i]],x=trial.summary$id,col=area.col[i],lty=2,lwd=1)
+  lines(smooth.spline(trial.summary$id, trial.summary[[i]]),col=area.col[i],lwd=3)
+  }
+legend("topright", 
+  legend = colnames(trial.summary)[1:n.area], 
+  col = area.col, 
+  lty = 1, 
+  cex = 0.8
+)
+```
+
+Shown above is the line graph of the average spike count across trials within Session 18. Although this session had 5 less brain areas that were present within the neurological data, the brain activity within those fewer areas had increased, with the number of neurons firing almost doubling from Session 12. The areas of interest from the earlier session are no longer active within this later session, but the success rate had improved, increasing by 0.07 to 0.81. Due to the shift in what areas of the brain are more active, it is possible that the mouse had learned to change the way it processed data overtime, as a result of undergoing so many trials in between Session 12's first trial to its last in Session 18. By adapting its way of thinking overtime, Lederberg could have possibly improved its success rate through learned habits. There is also a possibility that the number of brain areas that are active may also have a significant effect on the success rate, as the mouse is able to focus with more purpose with fewer areas, as the ones it has adapted to need to succeed are able to have a more concentrated amount of neurons fired within them.
+
+With a more focused idea of what to look for within our data, let us look at a comparison between the first and last trial of Session 18 in order to observe whether any of our proposed reasons have more prevalence.
+
+```{r,echo=FALSE}
+setwd("/Users/samisubi/Desktop/STA 141A Work/Final Project/sessions")
+
+plot.trial<-function(i.t,area, area.col,this_session){
+    
+    spks=this_session$spks[[i.t]];
+    n.neuron=dim(spks)[1]
+    time.points=this_session$time[[i.t]]
+    
+    plot(0,0,xlim=c(min(time.points),max(time.points)),ylim=c(0,n.neuron+1),col='white', xlab='Time (s)',yaxt='n', ylab='Neuron', main=paste('Trial ',i.t, 'feedback', this_session$feedback_type[i.t] ),cex.lab=1.5)
+    for(i in 1:n.neuron){
+        i.a=which(area== this_session$brain_area[i]);
+        col.this=area.col[i.a]
+        
+        ids.spike=which(spks[i,]>0) # find out when there are spikes 
+        if( length(ids.spike)>0 ){
+            points(x=time.points[ids.spike],y=rep(i, length(ids.spike) ),pch='.',cex=2, col=col.this)
+        }
+      
+            
+    }
+    
+legend("topright", 
+  legend = area, 
+  col = area.col, 
+  pch = 16, 
+  cex = 0.8
+  )
+}
+
+varname=names(trial.summary);
+area=varname[1:(length(varname)-4)]
+par(mfrow=c(1,2))
+plot.trial(1,area, area.col,session[[i.s]])
+plot.trial(216,area, area.col,session[[i.s]])
+```
+
+Illustrated above are plots of the neurons that were fired over time within the first and final trials of Session 18, Lederberg's final session. When observing the plots above, we can see that one constant kind of neurons that had been firing between the two sessions are root and SI. This is shown on the graph as an almost dotted, horizontal line across the graph, meaning that most of the data points associated with these neurons fire consistently. This may indicate that these neurons are vital for a mouse to process the trials it is undergoing. Additionally, ZI has a horizontal pattern across the first trial's graph, but dissipates by the 216th trial. The absence of this neuron firing may be a cause of the 216th trial failing, while the first trial succeeded. 
+
+After observing the previous comparisons, there is a possibility that the quantity of neural activity within the brain of a mouse may have a significant effect on the success rate of a mouse's sessions. Because of this, we may move to explore utilizing the data we have on neurological activity to predict whether a mouse is to succeed or not.
+
+## III. Data Integration
+
+```{r,echo=FALSE}
+data_integration <- data.frame()
+
+for(i in 1:length(session)){
+  this_session <- session[[i]]
+  session_length = 
+  tempdf <- tibble(
+    session = rep(paste('Session', i), length(this_session$feedback_type)),
+    mouse_name = this_session$mouse_name,
+    date_exp = this_session$date_exp,
+    feedback_type = this_session$feedback_type,
+    contrast_left = this_session$contrast_left,
+    contrast_right = this_session$contrast_right
+  )
+  
+  average_spike_trial <- c()
+  for(j in 1:length(session[[i]]$feedback_type)){
+    average_spike_trial = c(average_spike_trial, mean(apply(session[[i]]$spks[[j]], MARGIN = 1, FUN = sum)))
+  }
+  tempdf <- cbind(tempdf, average_spike_trial)
+  data_integration <- bind_rows(data_integration, tempdf)
+}
+data_integration <- na.omit(data_integration)
+head(data_integration)
+```
+
+Shown above are the first six rows of a new integrated dataset. This dataset contains all the trial data across all sessions, as well as a new additional column containing the average number of spikes within each trial. We will be using this to create a benchmark for our predictive model, before moving on to testing it.
+
+## IV. Predictive Modeling
+
+We will be utilizing a Logistic Regression Model to create our predictive model.
+
+```{r,echo=FALSE}
+data_integration$feedback_type = factor(data_integration$feedback_type, levels = c(-1,1))
+
+set.seed(296)
+split = sample.split(data_integration$feedback_type, SplitRatio = 0.80)
+training_set = subset(data_integration, split == TRUE)
+training_set <- na.omit(training_set)
+test_set = subset(data_integration, split == FALSE)
+test_set <- na.omit(test_set)
+
+classifier = glm(formula = feedback_type ~ .,
+                 family = binomial,
+                 data = training_set)
+
+probPred = predict(classifier, type = 'response', newdata = test_set[-4])
+y_pred = ifelse(probPred > 0.5, 1, -1)
+
+cm = table(test_set[, 4], y_pred > 0.5)
+print(cm)
+precision <- sum(y_pred == 1 & test_set[, 4] == 1) / sum(y_pred == 1)
+precision
+recall <- sum(y_pred == 1 & test_set[, 4] == 1) / sum(test_set[, 4] == 1)
+recall
+f1 <- 2 * precision *recall / (precision + recall)
+f1
+missclass <- (cm[1,2] + cm[2,1]) / sum(cm)
+missclass
+```
+
+Shown above is the confusion matrix for our model, as well as our precision rate, recall rate, f1 value, and misclassification error rate. Respectively, these values rounded to the second decimal place are 0.73, 0.97, 0.83, and 0.28.
+
+## V. Prediction Performance on the Test Sets and Discussion
+
+In order to test the efficacy of our predictive model, we must run a prediction performance test.
+
+```{r,echo=FALSE}
+setwd("/Users/samisubi/Desktop/STA 141A Work/Final Project/test") 
+test = list()
+for(i in 1:2){
+  test[[i]]=readRDS(paste('test',i,'.rds',sep=''))
+}
+n.session=length(test)
+
+meta <- tibble(
+  mouse_name = rep('name',n.session),
+  date_exp =rep('dt',n.session),
+  n_brain_area = rep(0,n.session),
+  n_neurons = rep(0,n.session),
+  n_trials = rep(0,n.session),
+  success_rate = rep(0,n.session)
+)
+
+for(i in 1:n.session){
+  tmp = test[[i]];
+  meta[i,1]=tmp$mouse_name;
+  meta[i,2]=tmp$date_exp;
+  meta[i,3]=length(unique(tmp$brain_area));
+  meta[i,4]=dim(tmp$spks[[1]])[1];
+  meta[i,5]=length(tmp$feedback_type);
+  meta[i,6]=mean(tmp$feedback_type+1)/2;
+}
+kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2) 
+```
+
+To perform our testing, we will utilize these two sets of testing data provided by our professor. The two testing sets are random sets of 100 trials from Session 1 and Session 18. Let us first start with testing the Session 1 data.
+
+```{r,echo=FALSE}
+setwd("/Users/samisubi/Desktop/STA 141A Work/Final Project/test") 
+
+testdata1 <- data.frame()
+
+for(i in 1){
+  this_test <- test[[i]]
+  tempdftest <- tibble(
+    session = rep(paste('Session', i), length(this_test$feedback_type)),
+    mouse_name = this_test$mouse_name,
+    date_exp = this_test$date_exp,
+    feedback_type = this_test$feedback_type,
+    contrast_left = this_test$contrast_left,
+    contrast_right = this_test$contrast_right
+  )
+  
+  average_spike_trial <- c()
+  for(j in 1:100){
+    average_spike_trial = c(average_spike_trial, mean(apply(test[[i]]$spks[[j]], MARGIN = 1, FUN = sum)))
+  }
+  tempdftest <- cbind(tempdftest, average_spike_trial)
+  testdata1 <- bind_rows(testdata1, tempdftest)
+}
+
+testdata1 <- na.omit(tempdftest)
+head(testdata1)
+```
+
+Depicted above is the first 6 rows of our first set of testing data, with the inclusion of the average number of spikes within the trial.
+
+```{r,echo=FALSE}
+setwd("/Users/samisubi/Desktop/STA 141A Work/Final Project/test") 
+
+testdata1$feedback_type = factor(testdata1$feedback_type, levels = c(-1,1))
+
+set.seed(296)
+split_t1 = sample.split(testdata1$feedback_type, SplitRatio = 0.80)
+training_set_1 = subset(data_integration, split == TRUE)
+training_set_1 <- na.omit(training_set)
+training_set_1$contrast_left <- as.numeric(training_set_1$contrast_left)
+training_set_1$contrast_right <- as.numeric(training_set_1$contrast_right)
+test_set_t1 = subset(testdata1, split == FALSE)
+test_set_t1 <- na.omit(test_set_t1)
+
+classifier = glm(formula = feedback_type ~ .,
+                 family = binomial,
+                 data = training_set_1)
+
+probPred = predict(classifier, type = 'response', newdata = test_set_t1)
+y_pred = ifelse(probPred > 0.5, 1, -1)
+
+cm = table(test_set_t1[, 4], y_pred > 0.5)
+print(cm)
+precision <- sum(y_pred == 1 & test_set_t1[, 4] == 1) / sum(y_pred == 1)
+precision
+recall <- sum(y_pred == 1 & test_set_t1[, 4] == 1) / sum(test_set_t1[, 4] == 1)
+recall
+f1 <- 2 * precision *recall / (precision + recall)
+f1
+```
+The confusion matrix for the model is shown above. Additionally, the precision rate, recall rate, and f1 values are 0.86, 0.65, and 0.74 respectively. Compared to our benchmark, our precision rate has increased.
+
+Although we were unable to test the second dataset, there are some observations that we have made. Session 1 had lower neuron firing rates, yet the success rate of the mouse was somewhat higher. This, accompanied with the prediction model we made, can allow us to conclude that the number of neurons that are fired are not the main reason for success rate.
+
+# Reference {-}
+
+Referred to a few of the discussion posts to assist with code, in particular Discussion8 and Discussion10. Additionally, I looked to Piazza for a lot of guidance, as well as troubleshooted my code with fellow student, Jason Javier.
+
+Steinmetz, N.A., Zatka-Haas, P., Carandini, M. et al. Distributed coding of choice, action and engagement across the mouse brain. Nature 576, 266–273 (2019). https://doi.org/10.1038/s41586-019-1787-x
+
+
+# Session info {-}
+
+```{r}
+sessionInfo()
+```
+
+
+# Appendix {-}
+\begin{center} Appendix: R Script \end{center}
+```{rm ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE}
+
+```
+
